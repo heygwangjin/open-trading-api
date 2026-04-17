@@ -27,6 +27,15 @@ interface HoldingsListProps {
 }
 
 type TabType = "holdings" | "pending";
+type SortKey = "profit_rate" | "profit_loss" | "eval_amount" | "stock_name";
+type SortDir = "asc" | "desc";
+
+const SORT_OPTIONS: { key: SortKey; label: string }[] = [
+  { key: "profit_rate", label: "수익률" },
+  { key: "profit_loss", label: "평가손익" },
+  { key: "eval_amount", label: "평가금액" },
+  { key: "stock_name", label: "종목명" },
+];
 
 export function HoldingsList({
   holdings,
@@ -40,8 +49,18 @@ export function HoldingsList({
 }: HoldingsListProps) {
   const [activeTab, setActiveTab] = useState<TabType>("holdings");
   const [cancellingOrderNo, setCancellingOrderNo] = useState<string | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey>("profit_rate");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   const isUs = market === "us";
+
+  const sortedHoldings = [...holdings].sort((a, b) => {
+    const mul = sortDir === "desc" ? -1 : 1;
+    if (sortKey === "stock_name") {
+      return mul * a.stock_name.localeCompare(b.stock_name, "ko");
+    }
+    return mul * (a[sortKey] - b[sortKey]);
+  });
 
   const totalEval = holdings.reduce((sum, h) => sum + h.eval_amount, 0);
   const totalProfitLoss = holdings.reduce((sum, h) => sum + h.profit_loss, 0);
@@ -227,6 +246,29 @@ export function HoldingsList({
             </div>
           )}
 
+          {/* Sort Controls */}
+          {holdings.length > 0 && (
+            <div className="flex gap-1 px-3 py-1.5 border-b border-slate-200 dark:border-slate-700 flex-wrap">
+              {SORT_OPTIONS.map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => {
+                    if (sortKey === key) setSortDir(d => d === "desc" ? "asc" : "desc");
+                    else { setSortKey(key); setSortDir("desc"); }
+                  }}
+                  className={cn(
+                    "text-xs px-2 py-0.5 rounded-full border transition-colors",
+                    sortKey === key
+                      ? "bg-primary text-white border-primary"
+                      : "bg-white dark:bg-slate-900 text-slate-500 border-slate-200 dark:border-slate-700 hover:border-primary/50"
+                  )}
+                >
+                  {label}{sortKey === key ? (sortDir === "desc" ? " ▼" : " ▲") : ""}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Holdings List */}
           {holdings.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-slate-400">
@@ -235,7 +277,7 @@ export function HoldingsList({
             </div>
           ) : (
             <div className="divide-y divide-slate-200 dark:divide-slate-700">
-              {holdings.map((holding) => (
+              {sortedHoldings.map((holding) => (
                 <HoldingItem key={holding.stock_code} holding={holding} isUs={isUs} />
               ))}
             </div>
