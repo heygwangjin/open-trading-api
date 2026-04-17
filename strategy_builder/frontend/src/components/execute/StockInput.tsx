@@ -7,6 +7,8 @@ import type { Symbol } from "@/types/symbols";
 
 const STORAGE_KEY = "kis_selected_stocks";
 
+type Market = "domestic" | "us";
+
 interface StockWithName {
   code: string;
   name: string;
@@ -15,24 +17,73 @@ interface StockWithName {
 interface StockInputProps {
   stocks: string[];
   onChange: (stocks: string[]) => void;
+  onMarketChange?: (market: Market) => void;
 }
 
-// 빠른 선택용 코드 목록 (이름은 마스터파일에서 조회)
-const POPULAR_CODES = ["005930", "000660", "035720", "005380", "051910", "035420"];
+const POPULAR_DOMESTIC = ["005930", "000660", "035720", "005380", "051910", "035420"];
+const POPULAR_US: StockWithName[] = [
+  { code: "AAPL", name: "Apple" },
+  { code: "TSLA", name: "Tesla" },
+  { code: "NVDA", name: "NVIDIA" },
+  { code: "MSFT", name: "Microsoft" },
+  { code: "AMZN", name: "Amazon" },
+  { code: "GOOGL", name: "Alphabet" },
+];
 
-export function StockInput({ stocks, onChange }: StockInputProps) {
+const MARKET_SWITCH_COOLDOWN = 5000; // useAccount MIN_FETCH_INTERVAL과 동일
+
+export function StockInput({ stocks, onChange, onMarketChange }: StockInputProps) {
+  const [market, setMarket] = useState<Market>("us");
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Symbol[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [highlightIndex, setHighlightIndex] = useState(-1);
   const [stockNames, setStockNames] = useState<Record<string, string>>({});
-  const [popularStocks, setPopularStocks] = useState<StockWithName[]>([]);
+  const [popularStocks, setPopularStocks] = useState<StockWithName[]>(POPULAR_US);
+  const [marketCooldown, setMarketCooldown] = useState(true); // 초기 조회 동안 비활성화
+  const [cooldownSeconds, setCooldownSeconds] = useState(Math.ceil(MARKET_SWITCH_COOLDOWN / 1000));
+  const cooldownTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const cooldownIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
   const isInitialLoadRef = useRef(true);
+
+  // 쿨다운 시작 (마운트 시 초기 조회 + 시장 전환 시 공통 사용)
+  const startCooldown = useCallback(() => {
+    const seconds = Math.ceil(MARKET_SWITCH_COOLDOWN / 1000);
+    setCooldownSeconds(seconds);
+    setMarketCooldown(true);
+
+    if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current);
+    if (cooldownIntervalRef.current) clearInterval(cooldownIntervalRef.current);
+
+    cooldownIntervalRef.current = setInterval(() => {
+      setCooldownSeconds((prev) => {
+        if (prev <= 1) {
+          clearInterval(cooldownIntervalRef.current!);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    cooldownTimerRef.current = setTimeout(() => {
+      setMarketCooldown(false);
+    }, MARKET_SWITCH_COOLDOWN);
+  }, []);
+
+  // 초기 로드: 마운트 직후 domestic 조회가 시작되므로 쿨다운 적용
+  useEffect(() => {
+    startCooldown();
+    return () => {
+      if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current);
+      if (cooldownIntervalRef.current) clearInterval(cooldownIntervalRef.current);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 마스터파일에서 종목명 조회 (코드 → 이름)
   const resolveStockName = useCallback(async (code: string): Promise<string | null> => {
@@ -47,7 +98,6 @@ export function StockInput({ stocks, onChange }: StockInputProps) {
   // 여러 종목 이름 일괄 조회
   const resolveMultipleNames = useCallback(async (codes: string[]) => {
     const resolved: Record<string, string> = {};
-    // 순차 호출 (rate limit 준수)
     for (const code of codes) {
       const name = await resolveStockName(code);
       if (name) {
@@ -57,13 +107,14 @@ export function StockInput({ stocks, onChange }: StockInputProps) {
     return resolved;
   }, [resolveStockName]);
 
-  // 빠른 선택 종목 로드 (마스터파일에서 개별 조회)
+  // 국내 인기 종목 로드 (마스터파일 기반)
   useEffect(() => {
+    if (market !== "domestic") return;
     let cancelled = false;
     async function loadPopular() {
       try {
         const resolved: StockWithName[] = [];
-        for (const code of POPULAR_CODES) {
+        for (const code of POPULAR_DOMESTIC) {
           if (cancelled) return;
           const name = await resolveStockName(code);
           if (name) resolved.push({ code, name });
@@ -75,9 +126,9 @@ export function StockInput({ stocks, onChange }: StockInputProps) {
     }
     loadPopular();
     return () => { cancelled = true; };
-  }, [resolveStockName]);
+  }, [market, resolveStockName]);
 
-  // Load saved stocks and names from localStorage on mount
+  // Load saved stocks from localStorage on mount
   useEffect(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -86,7 +137,6 @@ export function StockInput({ stocks, onChange }: StockInputProps) {
         if (Array.isArray(parsed) && parsed.length > 0) {
           const codes = parsed.map((s) => s.code);
           const names = parsed.reduce((acc, s) => {
-            // 코드와 이름이 같으면 이름 누락된 것 → 빈 문자열로 저장
             if (s.name && s.name !== s.code) {
               acc[s.code] = s.name;
             }
@@ -95,7 +145,6 @@ export function StockInput({ stocks, onChange }: StockInputProps) {
           onChange(codes);
           setStockNames(names);
 
-          // 이름이 누락된 종목은 마스터파일에서 조회
           const missingNameCodes = codes.filter((c) => !names[c]);
           if (missingNameCodes.length > 0) {
             resolveMultipleNames(missingNameCodes).then((resolved) => {
@@ -109,7 +158,6 @@ export function StockInput({ stocks, onChange }: StockInputProps) {
     } catch {
       // Ignore localStorage errors
     }
-    // 초기 로드 완료 후 save effect 활성화
     requestAnimationFrame(() => {
       isInitialLoadRef.current = false;
     });
@@ -129,6 +177,26 @@ export function StockInput({ stocks, onChange }: StockInputProps) {
     }
   }, [stocks, stockNames]);
 
+  // 탭 전환
+  const handleMarketChange = useCallback((newMarket: Market) => {
+    if (marketCooldown || newMarket === market) return;
+
+    setMarket(newMarket);
+    onMarketChange?.(newMarket);
+    onChange([]);
+    setStockNames({});
+    setQuery("");
+    setResults([]);
+    setIsOpen(false);
+    if (newMarket === "us") {
+      setPopularStocks(POPULAR_US);
+    } else {
+      setPopularStocks([]);
+    }
+
+    startCooldown();
+  }, [market, marketCooldown, onChange, onMarketChange, startCooldown]);
+
   // Debounced search
   const doSearch = useCallback(async (searchQuery: string) => {
     if (!searchQuery.trim()) {
@@ -139,7 +207,11 @@ export function StockInput({ stocks, onChange }: StockInputProps) {
 
     setIsLoading(true);
     try {
-      const response = await searchSymbols(searchQuery, 8);
+      const response = await searchSymbols(
+        searchQuery,
+        8,
+        market === "us" ? "us" : undefined
+      );
       setResults(response.items);
       setIsOpen(response.items.length > 0);
       setHighlightIndex(-1);
@@ -148,7 +220,7 @@ export function StockInput({ stocks, onChange }: StockInputProps) {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [market]);
 
   useEffect(() => {
     if (debounceRef.current) {
@@ -199,30 +271,33 @@ export function StockInput({ stocks, onChange }: StockInputProps) {
     [stocks, onChange]
   );
 
+  const isValidDomesticCode = (code: string) =>
+    code.length === 6 && /^\d+$/.test(code);
+
+  const isValidUsCode = (code: string) =>
+    code.length >= 1 && code.length <= 10 && /^[a-zA-Z0-9.]+$/.test(code);
+
   const addStockByCode = useCallback(
     async (code: string, name?: string) => {
-      const trimmed = code.trim();
-      if (trimmed.length === 6 && /^\d+$/.test(trimmed) && !stocks.includes(trimmed)) {
-        onChange([...stocks, trimmed]);
+      const trimmed = code.trim().toUpperCase();
+      const isValid =
+        market === "us" ? isValidUsCode(trimmed) : isValidDomesticCode(trimmed);
+
+      if (isValid && !stocks.includes(trimmed)) {
+        const normalizedCode = market === "domestic" ? code.trim() : trimmed;
+        onChange([...stocks, normalizedCode]);
         if (name) {
-          setStockNames((prev) => ({
-            ...prev,
-            [trimmed]: name,
-          }));
-        } else {
-          // 이름 없으면 마스터파일에서 조회
-          const resolved = await resolveStockName(trimmed);
+          setStockNames((prev) => ({ ...prev, [normalizedCode]: name }));
+        } else if (market === "domestic") {
+          const resolved = await resolveStockName(normalizedCode);
           if (resolved) {
-            setStockNames((prev) => ({
-              ...prev,
-              [trimmed]: resolved,
-            }));
+            setStockNames((prev) => ({ ...prev, [normalizedCode]: resolved }));
           }
         }
         setQuery("");
       }
     },
-    [stocks, onChange, resolveStockName]
+    [stocks, onChange, resolveStockName, market]
   );
 
   const removeStock = useCallback(
@@ -252,7 +327,7 @@ export function StockInput({ stocks, onChange }: StockInputProps) {
           e.preventDefault();
           if (highlightIndex >= 0 && highlightIndex < results.length) {
             handleSelect(results[highlightIndex]);
-          } else if (query.length === 6 && /^\d+$/.test(query)) {
+          } else {
             addStockByCode(query);
           }
           break;
@@ -260,7 +335,7 @@ export function StockInput({ stocks, onChange }: StockInputProps) {
           setIsOpen(false);
           break;
       }
-    } else if (e.key === "Enter" && query.length === 6 && /^\d+$/.test(query)) {
+    } else if (e.key === "Enter" && query.trim()) {
       e.preventDefault();
       addStockByCode(query);
     }
@@ -270,28 +345,45 @@ export function StockInput({ stocks, onChange }: StockInputProps) {
     (e: React.ClipboardEvent) => {
       e.preventDefault();
       const pastedText = e.clipboardData.getData("text");
-      const codes = pastedText
-        .split(/[,\s]+/)
-        .filter((c) => c.trim().length === 6 && /^\d+$/.test(c.trim()))
-        .map((c) => c.trim());
+      let codes: string[];
+
+      if (market === "us") {
+        codes = pastedText
+          .split(/[,\s]+/)
+          .map((c) => c.trim().toUpperCase())
+          .filter((c) => isValidUsCode(c));
+      } else {
+        codes = pastedText
+          .split(/[,\s]+/)
+          .filter((c) => isValidDomesticCode(c.trim()))
+          .map((c) => c.trim());
+      }
+
       const newCodes = codes.filter((c) => !stocks.includes(c));
       if (newCodes.length === 0) return;
 
       const uniqueCodes = [...new Set([...stocks, ...newCodes])];
       onChange(uniqueCodes);
 
-      // 붙여넣기한 종목 이름 조회
-      resolveMultipleNames(newCodes).then((resolved) => {
-        if (Object.keys(resolved).length > 0) {
-          setStockNames((prev) => ({ ...prev, ...resolved }));
-        }
-      });
+      if (market === "domestic") {
+        resolveMultipleNames(newCodes).then((resolved) => {
+          if (Object.keys(resolved).length > 0) {
+            setStockNames((prev) => ({ ...prev, ...resolved }));
+          }
+        });
+      }
     },
-    [stocks, onChange, resolveMultipleNames]
+    [stocks, onChange, resolveMultipleNames, market]
   );
 
-  const getStockName = (code: string): string => {
-    return stockNames[code] || "";
+  const getStockName = (code: string): string => stockNames[code] || "";
+
+  const exchangeBadgeClass = (exchange: string) => {
+    if (exchange === "kospi")
+      return "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400";
+    if (exchange === "us")
+      return "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400";
+    return "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400";
   };
 
   return (
@@ -299,6 +391,36 @@ export function StockInput({ stocks, onChange }: StockInputProps) {
       <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
         종목 검색
       </label>
+
+      {/* Market Tabs */}
+      <div className="flex rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden text-sm">
+        {(["domestic", "us"] as Market[]).map((m) => {
+          const isActive = market === m;
+          const isDisabled = marketCooldown && !isActive;
+          const label = m === "domestic" ? "국내주식" : "미국주식";
+          return (
+            <button
+              key={m}
+              onClick={() => handleMarketChange(m)}
+              disabled={isDisabled}
+              className={`flex-1 py-2 font-medium transition-all duration-300 flex items-center justify-center gap-1.5 ${
+                isActive
+                  ? "bg-primary text-white"
+                  : isDisabled
+                  ? "bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 cursor-not-allowed"
+                  : "text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800"
+              }`}
+            >
+              {label}
+              {isDisabled && cooldownSeconds > 0 && (
+                <span className="text-xs font-mono bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400 px-1.5 py-0.5 rounded-full">
+                  {cooldownSeconds}s
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
 
       {/* Search Input with Autocomplete */}
       <div className="relative">
@@ -312,7 +434,11 @@ export function StockInput({ stocks, onChange }: StockInputProps) {
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             onFocus={() => query && results.length > 0 && setIsOpen(true)}
-            placeholder="종목명 또는 코드 검색 (예: 삼성전자, 005930)"
+            placeholder={
+              market === "us"
+                ? "티커 검색 (예: AAPL, TSLA)"
+                : "종목명 또는 코드 검색 (예: 삼성전자, 005930)"
+            }
             className="w-full pl-10 pr-10 py-3 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 focus:ring-2 focus:ring-primary focus:border-transparent"
           />
           {query && !isLoading && (
@@ -357,13 +483,7 @@ export function StockInput({ stocks, onChange }: StockInputProps) {
                     {symbol.name}
                   </span>
                 </div>
-                <span
-                  className={`text-xs px-1.5 py-0.5 rounded ${
-                    symbol.exchange === "kospi"
-                      ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
-                      : "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
-                  }`}
-                >
+                <span className={`text-xs px-1.5 py-0.5 rounded ${exchangeBadgeClass(symbol.exchange)}`}>
                   {symbol.exchange_name}
                 </span>
               </button>
@@ -397,7 +517,7 @@ export function StockInput({ stocks, onChange }: StockInputProps) {
         </div>
       )}
 
-      {/* Quick Select (마스터파일 기반) */}
+      {/* Quick Select */}
       {popularStocks.length > 0 && (
         <div className="pt-2">
           <p className="text-xs text-slate-500 mb-2">빠른 선택</p>
@@ -408,7 +528,7 @@ export function StockInput({ stocks, onChange }: StockInputProps) {
                 onClick={() => addStockByCode(stock.code, stock.name)}
                 className="px-3 py-1 text-sm border border-slate-200 dark:border-slate-700 rounded-full hover:border-primary hover:text-primary transition-colors"
               >
-                {stock.name}
+                {market === "us" ? stock.code : stock.name}
               </button>
             ))}
           </div>

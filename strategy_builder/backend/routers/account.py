@@ -5,7 +5,7 @@
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
 from core import data_fetcher
@@ -132,7 +132,9 @@ async def get_account_info():
 
 
 @router.get("/holdings", response_model=HoldingsResponse)
-async def get_holdings():
+async def get_holdings(
+    market: str = Query("domestic", description="자산 클래스 (domestic/us)"),
+):
     """
     보유 종목 목록 조회
 
@@ -169,8 +171,11 @@ async def get_holdings():
 
         # 환경 확인 (trading_state에서 현재 모드 가져오기)
         env_dv = get_current_mode()
-        
-        holdings_df = data_fetcher.get_holdings(env_dv)
+
+        if market == "us":
+            holdings_df = data_fetcher.get_us_holdings(env_dv)
+        else:
+            holdings_df = data_fetcher.get_holdings(env_dv)
 
         if holdings_df.empty:
             add_log("info", "보유 종목이 없습니다")
@@ -182,7 +187,7 @@ async def get_holdings():
             )
 
         holdings = holdings_df.to_dict("records")
-        
+
         add_log("success", f"보유 종목 {len(holdings)}개 조회 완료")
 
         return HoldingsResponse(
@@ -202,17 +207,31 @@ async def get_holdings():
 
 
 @router.get("/balance", response_model=BalanceResponse)
-async def get_balance():
+async def get_balance(
+    market: str = Query("domestic", description="자산 클래스 (domestic/us)"),
+):
     """
-    예수금/주문가능금액 조회
+    예수금/계좌 요약 조회
 
-    Returns:
+    Args:
+        market: "domestic" (국내, 기본값) 또는 "us" (미국주식)
+
+    Returns (domestic):
         BalanceResponse with:
         - deposit: 예수금총금액
         - total_eval: 총평가금액
         - purchase_amount: 매입금액합계
         - eval_amount: 평가금액합계
         - profit_loss: 평가손익합계
+
+    Returns (us):
+        BalanceResponse with:
+        - purchase_amount: 외화매수금액합계 (USD)
+        - profit_loss: 해외총손익 (USD)
+        - eval_profit_loss: 총평가손익금액 (USD)
+        - profit_rate: 총수익률 (%)
+        - realized_profit_loss: 해외실현손익금액 (USD)
+        - realized_return_rate: 실현수익율 (%)
     """
     logs = []
 
@@ -232,30 +251,50 @@ async def get_balance():
                 logs=logs
             )
 
-        add_log("info", "예수금 조회 중...")
-
-        # 환경 확인 (trading_state에서 현재 모드 가져오기)
         env_dv = get_current_mode()
-        
-        deposit_info = data_fetcher.get_deposit(env_dv)
 
-        if not deposit_info:
-            add_log("warning", "예수금 정보를 가져올 수 없습니다")
-            return BalanceResponse(
-                status="error",
-                message="예수금 정보를 가져올 수 없습니다",
-                logs=logs
-            )
+        if market == "us":
+            add_log("info", "미국주식 계좌 요약 조회 중...")
+            deposit_info = data_fetcher.get_us_deposit(env_dv)
 
-        add_log("success", "예수금 조회 완료")
+            if not deposit_info:
+                add_log("warning", "미국주식 계좌 정보를 가져올 수 없습니다")
+                return BalanceResponse(
+                    status="error",
+                    message="미국주식 계좌 정보를 가져올 수 없습니다",
+                    logs=logs
+                )
 
-        # 금액 포맷팅 추가
-        formatted_data = {
-            **deposit_info,
-            "deposit_formatted": f"{deposit_info.get('deposit', 0):,}원",
-            "total_eval_formatted": f"{deposit_info.get('total_eval', 0):,}원",
-            "profit_loss_formatted": f"{deposit_info.get('profit_loss', 0):+,}원",
-        }
+            add_log("success", "미국주식 계좌 요약 조회 완료")
+
+            pl = deposit_info.get("profit_loss", 0.0)
+            formatted_data = {
+                **deposit_info,
+                "purchase_amount_formatted": f"${deposit_info.get('purchase_amount', 0.0):,.2f}",
+                "profit_loss_formatted": f"{'+' if pl >= 0 else ''}${pl:,.2f}",
+                "profit_rate_formatted": f"{deposit_info.get('profit_rate', 0.0):+.2f}%",
+            }
+
+        else:
+            add_log("info", "예수금 조회 중...")
+            deposit_info = data_fetcher.get_deposit(env_dv)
+
+            if not deposit_info:
+                add_log("warning", "예수금 정보를 가져올 수 없습니다")
+                return BalanceResponse(
+                    status="error",
+                    message="예수금 정보를 가져올 수 없습니다",
+                    logs=logs
+                )
+
+            add_log("success", "예수금 조회 완료")
+
+            formatted_data = {
+                **deposit_info,
+                "deposit_formatted": f"{deposit_info.get('deposit', 0):,}원",
+                "total_eval_formatted": f"{deposit_info.get('total_eval', 0):,}원",
+                "profit_loss_formatted": f"{deposit_info.get('profit_loss', 0):+,}원",
+            }
 
         return BalanceResponse(
             status="success",
@@ -274,7 +313,11 @@ async def get_balance():
 
 
 @router.get("/buyable/{stock_code}")
-async def get_buyable(stock_code: str, price: int = 0):
+async def get_buyable(
+    stock_code: str,
+    price: float = 0,
+    market: str = Query("domestic", description="자산 클래스 (domestic/us)"),
+):
     """
     특정 종목 매수가능금액/수량 조회
 
@@ -299,16 +342,21 @@ async def get_buyable(stock_code: str, price: int = 0):
 
         # 가격이 0이면 현재가 조회
         if price <= 0:
-            current = data_fetcher.get_current_price(stock_code, env_dv)
+            current = data_fetcher.get_current_price(stock_code, env_dv, market=market)
             price = current.get("price", 0)
-            
+
             if price <= 0:
                 return {
                     "status": "error",
                     "message": "현재가를 조회할 수 없습니다"
                 }
 
-        buyable = data_fetcher.get_buyable_amount(stock_code, price, env_dv)
+        buyable = data_fetcher.get_buyable_amount(stock_code, price, env_dv, market=market)
+
+        if market == "us":
+            amount_str = f"${buyable.get('amount', 0):,.2f}"
+        else:
+            amount_str = f"{int(buyable.get('amount', 0)):,}원"
 
         return {
             "status": "success",
@@ -317,7 +365,7 @@ async def get_buyable(stock_code: str, price: int = 0):
                 "price": price,
                 "amount": buyable.get("amount", 0),
                 "quantity": buyable.get("quantity", 0),
-                "amount_formatted": f"{buyable.get('amount', 0):,}원",
+                "amount_formatted": amount_str,
             }
         }
 

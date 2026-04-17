@@ -28,7 +28,7 @@ import type { BuyableInfo } from "@/types/account";
 
 export default function ExecutePage() {
   const { status: authStatus } = useAuth();
-  const { holdings, balance, fetchHoldings, fetchBalance, resetThrottle, isLoading: accountLoading } = useAccount();
+  const { holdings, balance, usBalance, fetchHoldings, fetchBalance, resetThrottle, isLoading: accountLoading } = useAccount();
   const {
     strategies,
     selectedStrategy,
@@ -44,6 +44,7 @@ export default function ExecutePage() {
   const { execute: executeOrder, isLoading: orderLoading } = useOrder();
 
   const [stocks, setStocks] = useState<string[]>([]);
+  const [market, setMarket] = useState<"domestic" | "us">("us");
   const [selectedSignal, setSelectedSignal] = useState<SignalResult | null>(null);
   const [priceData, setPriceData] = useState<PriceData | null>(null);
   const [buyableInfo, setBuyableInfo] = useState<BuyableInfo | null>(null);
@@ -68,33 +69,33 @@ export default function ExecutePage() {
   // 순차 호출: 모의투자 모드의 초당 요청 제한 준수
   useEffect(() => {
     const fetchSequentially = async () => {
-      await fetchHoldings();
-      await fetchBalance();
+      await fetchHoldings(market);
+      await fetchBalance(market);
       await fetchPendingOrders();
     };
     if (authStatus.authenticated) {
       fetchSequentially();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authStatus.authenticated, authStatus.mode]);
+  }, [authStatus.authenticated, authStatus.mode, market]);
 
   const fetchPendingOrders = useCallback(async () => {
     try {
-      const response = await getPendingOrders();
+      const response = await getPendingOrders(market);
       if (response.status === "success") {
         setPendingOrders(response.orders || []);
       }
     } catch (error) {
       console.error("Failed to fetch pending orders:", error);
     }
-  }, []);
+  }, [market]);
 
   const handleRefresh = useCallback(async () => {
     resetThrottle();
-    await fetchHoldings();
-    await fetchBalance();
+    await fetchHoldings(market);
+    await fetchBalance(market);
     await fetchPendingOrders();
-  }, [resetThrottle, fetchHoldings, fetchBalance, fetchPendingOrders]);
+  }, [resetThrottle, fetchHoldings, fetchBalance, fetchPendingOrders, market]);
 
   const handleCancelOrder = useCallback(async (request: CancelOrderRequest) => {
     try {
@@ -102,21 +103,21 @@ export default function ExecutePage() {
       if (response.success) {
         // 순차 호출: 취소 후 데이터 갱신
         await fetchPendingOrders();
-        await fetchBalance();
+        await fetchBalance(market);
       } else {
         alert(response.message || "주문 취소 실패");
       }
     } catch {
       alert("주문 취소 중 오류가 발생했습니다");
     }
-  }, [fetchPendingOrders, fetchBalance]);
+  }, [fetchPendingOrders, fetchBalance, market]);
 
   const handleExecute = async () => {
     if (stocks.length === 0) {
       alert("종목을 입력해주세요");
       return;
     }
-    await execute(stocks);
+    await execute(stocks, market);
   };
 
   const handleSignalSelect = async (signal: SignalResult) => {
@@ -236,7 +237,7 @@ export default function ExecutePage() {
 
             {/* Stock Input */}
             <div className="card p-6">
-              <StockInput stocks={stocks} onChange={setStocks} />
+              <StockInput stocks={stocks} onChange={setStocks} onMarketChange={setMarket} />
             </div>
 
             {/* Execute Button */}
@@ -287,6 +288,8 @@ export default function ExecutePage() {
               holdings={holdings}
               pendingOrders={pendingOrders}
               balance={balance}
+              usBalance={usBalance}
+              market={market}
               onRefresh={handleRefresh}
               onCancelOrder={handleCancelOrder}
               isLoading={accountLoading}

@@ -12,13 +12,15 @@ import {
   Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { Holding, Balance } from "@/types/account";
+import type { Holding, Balance, UsBalance } from "@/types/account";
 import type { PendingOrder, CancelOrderRequest } from "@/lib/api/orders";
 
 interface HoldingsListProps {
   holdings: Holding[];
   pendingOrders?: PendingOrder[];
   balance?: Balance | null;
+  usBalance?: UsBalance | null;
+  market?: "domestic" | "us";
   onRefresh?: () => void;
   onCancelOrder?: (request: CancelOrderRequest) => Promise<void>;
   isLoading?: boolean;
@@ -30,6 +32,8 @@ export function HoldingsList({
   holdings,
   pendingOrders = [],
   balance,
+  usBalance,
+  market = "domestic",
   onRefresh,
   onCancelOrder,
   isLoading,
@@ -37,10 +41,15 @@ export function HoldingsList({
   const [activeTab, setActiveTab] = useState<TabType>("holdings");
   const [cancellingOrderNo, setCancellingOrderNo] = useState<string | null>(null);
 
+  const isUs = market === "us";
+
   const totalEval = holdings.reduce((sum, h) => sum + h.eval_amount, 0);
   const totalProfitLoss = holdings.reduce((sum, h) => sum + h.profit_loss, 0);
   const totalProfitRate =
     totalEval > 0 ? (totalProfitLoss / (totalEval - totalProfitLoss)) * 100 : 0;
+
+  const formatAmount = (value: number) =>
+    isUs ? `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : `${value.toLocaleString()}원`;
 
   const handleCancelOrder = useCallback(
     async (order: PendingOrder) => {
@@ -64,7 +73,7 @@ export function HoldingsList({
   return (
     <div className="card p-0 overflow-hidden">
       {/* Balance Summary */}
-      {balance && (
+      {!isUs && balance && (
         <div className="px-4 py-3 bg-gradient-to-r from-primary/5 to-primary/10 border-b border-slate-200 dark:border-slate-700">
           <div className="flex items-center gap-2 mb-2">
             <Wallet className="w-4 h-4 text-primary" />
@@ -83,6 +92,36 @@ export function HoldingsList({
               <p className="text-xs text-slate-500">총 평가</p>
               <p className="text-sm font-bold text-slate-900 dark:text-white">
                 {balance.total_eval.toLocaleString()}원
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+      {isUs && usBalance && (
+        <div className="px-4 py-3 bg-gradient-to-r from-primary/5 to-primary/10 border-b border-slate-200 dark:border-slate-700">
+          <div className="flex items-center gap-2 mb-2">
+            <Wallet className="w-4 h-4 text-primary" />
+            <span className="text-xs font-medium text-slate-600 dark:text-slate-400">
+              계좌 요약 (USD)
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <p className="text-xs text-slate-500">매수금액합계</p>
+              <p className="text-sm font-bold text-slate-900 dark:text-white">
+                {usBalance.purchase_amount_formatted ?? `$${usBalance.purchase_amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}`}
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="text-xs text-slate-500">총 손익</p>
+              <p className={cn(
+                "text-sm font-bold",
+                usBalance.profit_loss >= 0 ? "text-profit" : "text-loss"
+              )}>
+                {usBalance.profit_loss_formatted ?? `${usBalance.profit_loss >= 0 ? "+" : ""}$${Math.abs(usBalance.profit_loss).toFixed(2)}`}
+                <span className="text-xs ml-1 font-normal">
+                  ({usBalance.profit_rate_formatted ?? `${usBalance.profit_rate >= 0 ? "+" : ""}${usBalance.profit_rate.toFixed(2)}%`})
+                </span>
               </p>
             </div>
           </div>
@@ -167,7 +206,7 @@ export function HoldingsList({
             <div className="grid grid-cols-2 gap-4 p-4 bg-slate-50 dark:bg-slate-800/50">
               <div>
                 <p className="text-sm text-slate-500">총 평가금액</p>
-                <p className="text-lg font-bold">{totalEval.toLocaleString()}원</p>
+                <p className="text-lg font-bold">{formatAmount(totalEval)}</p>
               </div>
               <div className="text-right">
                 <p className="text-sm text-slate-500">총 손익</p>
@@ -178,7 +217,7 @@ export function HoldingsList({
                   )}
                 >
                   {totalProfitLoss >= 0 ? "+" : ""}
-                  {totalProfitLoss.toLocaleString()}원
+                  {formatAmount(totalProfitLoss)}
                   <span className="text-sm ml-1">
                     ({totalProfitRate >= 0 ? "+" : ""}
                     {totalProfitRate.toFixed(2)}%)
@@ -197,7 +236,7 @@ export function HoldingsList({
           ) : (
             <div className="divide-y divide-slate-200 dark:divide-slate-700">
               {holdings.map((holding) => (
-                <HoldingItem key={holding.stock_code} holding={holding} />
+                <HoldingItem key={holding.stock_code} holding={holding} isUs={isUs} />
               ))}
             </div>
           )}
@@ -220,6 +259,7 @@ export function HoldingsList({
                   order={order}
                   onCancel={handleCancelOrder}
                   isCancelling={cancellingOrderNo === order.order_no}
+                  isUs={isUs}
                 />
               ))}
             </div>
@@ -232,10 +272,16 @@ export function HoldingsList({
 
 interface HoldingItemProps {
   holding: Holding;
+  isUs?: boolean;
 }
 
-function HoldingItem({ holding }: HoldingItemProps) {
+function HoldingItem({ holding, isUs = false }: HoldingItemProps) {
   const isProfitable = holding.profit_loss >= 0;
+
+  const formatPrice = (value: number) =>
+    isUs
+      ? `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+      : `${Math.round(value).toLocaleString()}원`;
 
   return (
     <div className="flex items-center gap-4 p-4 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
@@ -249,13 +295,13 @@ function HoldingItem({ holding }: HoldingItemProps) {
         </div>
         <div className="flex items-center gap-3 mt-1 text-sm text-slate-500">
           <span>{holding.quantity}주</span>
-          <span>평균 {Math.round(holding.avg_price).toLocaleString()}원</span>
+          <span>평균 {formatPrice(holding.avg_price)}</span>
         </div>
       </div>
 
       {/* Current Value */}
       <div className="text-right">
-        <p className="font-medium">{holding.current_price.toLocaleString()}원</p>
+        <p className="font-medium">{formatPrice(holding.current_price)}</p>
         <div
           className={cn(
             "flex items-center justify-end gap-1 text-sm",
@@ -281,10 +327,16 @@ interface PendingOrderItemProps {
   order: PendingOrder;
   onCancel: (order: PendingOrder) => void;
   isCancelling: boolean;
+  isUs?: boolean;
 }
 
-function PendingOrderItem({ order, onCancel, isCancelling }: PendingOrderItemProps) {
+function PendingOrderItem({ order, onCancel, isCancelling, isUs = false }: PendingOrderItemProps) {
   const isBuy = order.order_type.includes("매수") || order.order_type === "BUY";
+
+  const formatOrderPrice = (value: number) =>
+    isUs
+      ? `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+      : `${value.toLocaleString()}원`;
 
   return (
     <div className="flex items-center gap-4 p-4 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
@@ -308,7 +360,7 @@ function PendingOrderItem({ order, onCancel, isCancelling }: PendingOrderItemPro
         </div>
         <div className="flex items-center gap-3 mt-1 text-sm text-slate-500">
           <span className="font-mono">
-            {order.order_price.toLocaleString()}원
+            {formatOrderPrice(order.order_price)}
           </span>
           <span>
             {order.unfilled_qty}/{order.order_qty}주

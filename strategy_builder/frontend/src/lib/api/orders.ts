@@ -117,8 +117,10 @@ export async function clearAccountCache(): Promise<{ status: string; message: st
 /**
  * 미체결 주문 목록 조회
  */
-export async function getPendingOrders(): Promise<PendingOrdersResponse> {
-  return apiGet<PendingOrdersResponse>("/api/orders/pending");
+export async function getPendingOrders(
+  market: "domestic" | "us" = "domestic"
+): Promise<PendingOrdersResponse> {
+  return apiGet<PendingOrdersResponse>(`/api/orders/pending?market=${market}`);
 }
 
 /**
